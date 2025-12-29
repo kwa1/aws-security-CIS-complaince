@@ -17,10 +17,20 @@ resource "aws_lambda_function" "slack" {
   handler       = "handler.lambda_handler"
   runtime       = "python3.12"
   filename      = "slack.zip"
+  source_code_hash = filebase64sha256("slack.zip")
 
   environment {
     variables = {
       SLACK_WEBHOOK_URL = var.slack_webhook_url
     }
   }
+}
+
+
+resource "aws_lambda_permission" "allow_sns" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.slack.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.config_alerts.arn
 }
