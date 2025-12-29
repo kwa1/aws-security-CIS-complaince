@@ -1,6 +1,6 @@
-resource "aws_sns_topic" "config_alerts" {
-  name = "aws-config-security-alerts"
-}
+#resource "aws_sns_topic" "config_alerts" {
+#  name = "aws-config-security-alerts"
+#}
 
 # Optional email subscription (for audits)
 
