@@ -1,0 +1,15 @@
+name: Terraform Governance
+description: Enterprise Terraform governance with OPA, tflint, tfsec, and Slack notifications
+
+inputs:
+  environment:
+    required: true
+    description: Terraform environment name
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        chmod +x $GITHUB_ACTION_PATH/entrypoint.sh
+        $GITHUB_ACTION_PATH/entrypoint.sh "${{ inputs.environment }}"
