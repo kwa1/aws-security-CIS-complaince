@@ -1,0 +1,77 @@
+name: Terraform Governance
+
+on:
+  pull_request:
+
+jobs:
+  terraform-governance:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [dev-account, member-account, prod-account]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64
+          chmod +x opa
+          sudo mv opa /usr/local/bin/opa
+
+      - name: Install tflint
+        run: |
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+      - name: Install tfsec
+        run: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+
+      - name: Run Reusable Terraform Governance Action
+        uses: ./.github/actions/terraform-governance
+        with:
+          environment: ${{ matrix.env }}
+
+      - name: Post OPA Violations on PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const result = JSON.parse(fs.readFileSync('terraform/environments/' + '${{ matrix.env }}' + '/plan.json', 'utf8'));
+            const denies = result.result?.[0]?.expressions?.[0]?.value || [];
+            if (denies.length === 0) return;
+
+            const body = `
+            🚫 **Terraform policy violations detected** (${context.job})
+            **Environment:** \`${{ matrix.env }}\`
+            \`\`\`
+            ${denies.join("\n")}
+            \`\`\`
+            `;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+      - name: Notify Slack on Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": ":rotating_light: Terraform Governance Failure\nRepo: ${{ github.repository }}\nPR: ${{ github.event.pull_request.html_url }}\nEnvironment: ${{ matrix.env }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
