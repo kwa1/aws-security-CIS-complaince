@@ -429,7 +429,7 @@ resource "aws_lambda_function" "slack" {
 }
 
 resource "aws_lambda_permission" "sns" {
-  for_each = local.slack_enabled ? local.alerts : {}
+  for_each = { for key, alert in local.alerts : key => alert if local.slack_enabled }
 
   statement_id  = "AllowSns-${each.key}"
   action        = "lambda:InvokeFunction"
@@ -439,7 +439,7 @@ resource "aws_lambda_permission" "sns" {
 }
 
 resource "aws_sns_topic_subscription" "slack" {
-  for_each = local.slack_enabled ? local.alerts : {}
+  for_each = { for key, alert in local.alerts : key => alert if local.slack_enabled }
 
   topic_arn = aws_sns_topic.alerts[each.key].arn
   protocol  = "lambda"

@@ -1,0 +1,169 @@
+name: CI
+
+# Static analysis and unit tests. Needs no AWS credentials, so it is safe to run on
+# pull requests from forks.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  terraform-static:
+    name: Terraform fmt / validate / tflint / tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.66.0
+
+      - name: Format check
+        run: terraform fmt -check -recursive -diff
+
+      - name: Init, validate and test every root and module
+        run: |
+          set -euo pipefail
+          tflint --init
+          for dir in modules/* bootstrap environments/*; do
+            [ -d "$dir" ] || continue
+            echo "::group::$dir"
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+            tflint --chdir="$dir" --config="$GITHUB_WORKSPACE/.tflint.hcl" --minimum-failure-severity=warning
+            if [ -d "$dir/tests" ]; then
+              terraform -chdir="$dir" test
+            fi
+            echo "::endgroup::"
+          done
+
+  checkov:
+    name: Checkov (IaC security scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install checkov
+        run: pip install --require-hashes -r requirements-ci.txt
+
+      - name: Scan
+        run: |
+          checkov --directory . --framework terraform,github_actions,secrets \
+            --config-file .checkov.yaml --compact --quiet
+
+  opa:
+    name: OPA policy unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: open-policy-agent/setup-opa@b2b258e089860efaadaaf71bf6e3aecb4a3eeff1 # v2.4.0
+        with:
+          version: 1.23.0
+
+      - name: Format, check, test
+        run: |
+          set -euo pipefail
+          opa fmt --rego-v1 --fail opa
+          opa check --strict --v1-compatible opa
+          opa test --v1-compatible opa -v
+
+  lambda:
+    name: Lambda unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Test
+        run: |
+          pip install --require-hashes -r requirements-ci.txt
+          python -m pytest modules/notifications/lambda/tests -q
+
+  workflow-lint:
+    name: Lint GitHub workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          version=1.7.12
+          curl -fsSL --proto '=https' --tlsv1.2 -o actionlint.tgz \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          echo "ACTIONLINT_SHA256_PLACEHOLDER  actionlint.tgz" | sha256sum --check
+          tar -xzf actionlint.tgz actionlint
+          ./actionlint -color
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: gitleaks
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${version}"
+          curl -fsSL --proto '=https' --tlsv1.2 -o gitleaks.tgz "${base}/gitleaks_${version}_linux_x64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o checksums.txt "${base}/gitleaks_${version}_checksums.txt"
+          grep " gitleaks_${version}_linux_x64.tar.gz\$" checksums.txt | sed 's/gitleaks_.*/gitleaks.tgz/' | sha256sum --check
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks detect --source . --redact --no-banner --exit-code 1
+
+  gate:
+    name: CI gate
+    if: always()
+    needs: [terraform-static, checkov, opa, lambda, workflow-lint, secret-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more CI jobs failed."
+            exit 1
+          fi
