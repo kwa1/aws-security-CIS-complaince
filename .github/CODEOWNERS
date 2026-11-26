@@ -1,0 +1,8 @@
+# Replace @your-org/... with real GitHub teams. Combine with branch protection
+# ("Require review from Code Owners") so security-sensitive paths need approval.
+*                       @your-org/platform-security
+/.github/               @your-org/platform-security @your-org/devsecops
+/opa/                   @your-org/platform-security
+/bootstrap/             @your-org/platform-security @your-org/cloud-platform
+/environments/          @your-org/platform-security @your-org/cloud-platform
+/modules/               @your-org/platform-security
