@@ -32,9 +32,3 @@ variable "enable_cross_region_aggregation" {
   type        = bool
   default     = true
 }
-
-variable "tags" {
-  description = "Tags applied to resources."
-  type        = map(string)
-  default     = {}
-}

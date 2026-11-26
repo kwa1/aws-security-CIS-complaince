@@ -41,7 +41,6 @@ module "securityhub" {
 
   cis_version                     = var.cis_version
   enable_cross_region_aggregation = var.is_home_region
-  tags                            = local.tags
 }
 
 module "remediation" {

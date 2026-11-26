@@ -83,7 +83,6 @@ module "securityhub" {
   cis_version                     = var.cis_version
   enable_cross_region_aggregation = var.is_home_region
   enable_organization_auto_enable = var.enable_organization_auto_enable && var.is_home_region
-  tags                            = local.tags
 }
 
 module "notifications" {

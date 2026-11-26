@@ -66,7 +66,7 @@ Confirm each email subscription (AWS sends a confirmation message to every addre
 
 For every other region you govern, copy the target with `is_home_region = false`, a distinct state key (for example `security-account/eu-west-1/terraform.tfstate`), and set `config_kms_key_arn` to the home-region key ARN (output `config_kms_key_arn`). Then add a matrix entry in `deploy.yml` and `drift.yml`. The central bucket is global to the organization and is only created in the home region.
 
-> The Config delivery KMS key lives in the home region. AWS Config in another region delivers to the same bucket; for the cross-region key the bucket's home-region key policy already trusts `config.amazonaws.com` from the governed accounts. If your organization prefers a key per region, create one with the `config-central-storage` module per region and pass each member region its own key.
+> The Config delivery KMS key must live in the **same Region as the central bucket** (the home region), because S3 performs the SSE-KMS encryption. Recorders in other Regions therefore reference the home-region key ARN, and its key policy trusts `config.amazonaws.com` for every account in `governed_account_ids` (conditioned on `aws:SourceAccount`).
 
 ## 4. Member accounts
 
