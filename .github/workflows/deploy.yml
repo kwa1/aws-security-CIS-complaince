@@ -1,0 +1,67 @@
+name: Deploy
+
+# Pull request  -> plan every target (read-only) and gate with OPA.
+# Push to main  -> plan again, then apply after manual approval in the GitHub Environment.
+#
+# Add one matrix entry per account + region. Role ARNs come from repository variables
+# (they are not secrets) named in plan_role_var / apply_role_var.
+on:
+  pull_request:
+    paths:
+      - "environments/**"
+      - "modules/**"
+      - "opa/**"
+      - ".github/workflows/deploy.yml"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "environments/**"
+      - "modules/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: security-account / us-east-1
+            stack: security-account
+            tfvars: environments/security-account/prod.tfvars
+            backend_config: environments/security-account/prod.backend.hcl
+            aws_region: us-east-1
+            github_environment: prod-security
+            plan_role_var: SECURITY_PLAN_ROLE_ARN
+            apply_role_var: SECURITY_APPLY_ROLE_ARN
+          # - name: member-account 222222222222 / us-east-1
+          #   stack: member-account
+          #   tfvars: environments/member-account/222222222222-us-east-1.tfvars
+          #   backend_config: environments/member-account/222222222222-us-east-1.backend.hcl
+          #   aws_region: us-east-1
+          #   github_environment: prod-member
+          #   plan_role_var: MEMBER_222222222222_PLAN_ROLE_ARN
+          #   apply_role_var: MEMBER_222222222222_APPLY_ROLE_ARN
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/terraform.yml
+    with:
+      stack: ${{ matrix.stack }}
+      tfvars: ${{ matrix.tfvars }}
+      backend_config: ${{ matrix.backend_config }}
+      aws_region: ${{ matrix.aws_region }}
+      github_environment: ${{ matrix.github_environment }}
+      plan_role_arn: ${{ vars[matrix.plan_role_var] }}
+      apply_role_arn: ${{ vars[matrix.apply_role_var] }}
+      apply: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}

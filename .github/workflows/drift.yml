@@ -1,0 +1,87 @@
+name: Drift detection
+
+# Nightly read-only plan of every target. Exit code 2 from `terraform plan -detailed-exitcode`
+# means the live account differs from code (manual change, or failed remediation).
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Drift ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: security-account / us-east-1
+            stack: security-account
+            tfvars: environments/security-account/prod.tfvars
+            backend_config: environments/security-account/prod.backend.hcl
+            aws_region: us-east-1
+            plan_role_var: SECURITY_PLAN_ROLE_ARN
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6.3.1
+        with:
+          role-to-assume: ${{ vars[matrix.plan_role_var] }}
+          aws-region: ${{ matrix.aws_region }}
+          role-session-name: gh-drift-${{ github.run_id }}
+
+      - name: Init
+        working-directory: environments/${{ matrix.stack }}
+        env:
+          BACKEND_CONFIG: ${{ github.workspace }}/${{ matrix.backend_config }}
+          TF_IN_AUTOMATION: "true"
+        run: terraform init -input=false -backend-config="$BACKEND_CONFIG"
+
+      - name: Detect drift
+        id: plan
+        working-directory: environments/${{ matrix.stack }}
+        env:
+          TFVARS: ${{ github.workspace }}/${{ matrix.tfvars }}
+          TF_IN_AUTOMATION: "true"
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock=false -detailed-exitcode -var-file="$TFVARS" > drift.txt
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          tail -n 80 drift.txt >> "$GITHUB_STEP_SUMMARY"
+          # 0 = no changes, 2 = drift, anything else = error
+          [ "$code" -ne 1 ]
+
+      - name: Open or update drift issue
+        if: steps.plan.outputs.exit_code == '2'
+        working-directory: environments/${{ matrix.stack }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Terraform drift: ${{ matrix.name }}"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="Drift detected by the nightly check. Review the run before re-applying: ${RUN_URL}"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi
+          echo "::error::Infrastructure drift detected."
+          exit 1

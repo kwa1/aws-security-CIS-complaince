@@ -1,0 +1,11 @@
+framework:
+  - terraform
+  - github_actions
+  - secrets
+directory:
+  - .
+skip-path:
+  - ".terraform"
+  - "modules/*/tests"
+download-external-modules: false
+evaluate-variables: true
