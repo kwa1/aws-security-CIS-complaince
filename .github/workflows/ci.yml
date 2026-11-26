@@ -92,7 +92,7 @@ jobs:
       - name: Format, check, test
         run: |
           set -euo pipefail
-          opa fmt --rego-v1 --fail opa
+          opa fmt --rego-v1 --fail -l opa
           opa check --strict --v1-compatible opa
           opa test --v1-compatible opa -v
 
