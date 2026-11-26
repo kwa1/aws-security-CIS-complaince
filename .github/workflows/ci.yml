@@ -127,9 +127,10 @@ jobs:
         run: |
           set -euo pipefail
           version=1.7.12
-          curl -fsSL --proto '=https' --tlsv1.2 -o actionlint.tgz \
-            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
-          echo "ACTIONLINT_SHA256_PLACEHOLDER  actionlint.tgz" | sha256sum --check
+          base="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          curl -fsSL --proto '=https' --tlsv1.2 -o actionlint.tgz "${base}/actionlint_${version}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o checksums.txt "${base}/actionlint_${version}_checksums.txt"
+          grep " actionlint_${version}_linux_amd64.tar.gz\$" checksums.txt | sed 's/actionlint_.*/actionlint.tgz/' | sha256sum --check
           tar -xzf actionlint.tgz actionlint
           ./actionlint -color
 
