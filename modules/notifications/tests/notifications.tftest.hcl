@@ -72,7 +72,7 @@ run "slack_enabled_creates_forwarder" {
   }
 
   assert {
-    condition     = aws_lambda_function.slack[0].tracing_config[0].mode == "Active" && aws_lambda_function.slack[0].reserved_concurrent_executions == 5
+    condition     = aws_lambda_function.slack[0].tracing_config[0].mode == "Active" && aws_lambda_function.slack[0].reserved_concurrent_executions == var.lambda_reserved_concurrency
     error_message = "Tracing must be active and concurrency capped."
   }
 }

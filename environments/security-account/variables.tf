@@ -40,8 +40,19 @@ variable "environment" {
 }
 
 variable "config_bucket_name" {
-  description = "Globally unique name of the central AWS Config bucket."
+  description = "Globally unique name of the central AWS Config bucket. Must start with '<name_prefix>-' (the CI apply role is scoped to that prefix)."
   type        = string
+
+  validation {
+    condition     = startswith(var.config_bucket_name, "${var.name_prefix}-")
+    error_message = "config_bucket_name must start with '<name_prefix>-'."
+  }
+}
+
+variable "config_kms_key_arn" {
+  description = "ARN of the Config delivery KMS key created in the home region. Required when is_home_region = false; ignored in the home region."
+  type        = string
+  default     = null
 }
 
 variable "governed_account_ids" {

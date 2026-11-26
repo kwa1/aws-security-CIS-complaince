@@ -55,7 +55,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -136,12 +135,23 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The saved plan references generated Lambda zips, so both travel together to the apply job.
+      - name: Bundle plan
+        if: inputs.apply
+        env:
+          STACK: ${{ inputs.stack }}
+        run: |
+          set -euo pipefail
+          files=("environments/${STACK}/tfplan")
+          [ -d modules/notifications/build ] && files+=("modules/notifications/build")
+          tar -czf plan-bundle.tgz "${files[@]}"
+
       - name: Upload plan
         if: inputs.apply
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tfplan-${{ inputs.stack }}-${{ inputs.aws_region }}-${{ github.run_id }}
-          path: environments/${{ inputs.stack }}/tfplan
+          path: plan-bundle.tgz
           retention-days: 3
           if-no-files-found: error
 
@@ -175,7 +185,10 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tfplan-${{ inputs.stack }}-${{ inputs.aws_region }}-${{ github.run_id }}
-          path: environments/${{ inputs.stack }}
+          path: .
+
+      - name: Unpack plan
+        run: tar -xzf plan-bundle.tgz
 
       - name: Init
         working-directory: environments/${{ inputs.stack }}

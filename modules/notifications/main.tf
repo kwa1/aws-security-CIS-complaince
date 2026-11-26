@@ -64,21 +64,22 @@ locals {
 # --- Encryption key for SNS, SQS, Lambda environment and logs --------------------------------
 
 data "aws_iam_policy_document" "key" {
+  #checkov:skip=CKV_AWS_109:AWS-documented key policies for EventBridge, SNS and CloudWatch Logs use Resource "*" (this key only).
+  #checkov:skip=CKV_AWS_111:Same as above.
+  #checkov:skip=CKV_AWS_356:Same as above.
+
+  # AWS-documented pattern for EventBridge -> KMS-encrypted SNS/SQS. No source condition is added
+  # because EventBridge does not reliably send aws:SourceAccount on KMS calls; who may publish is
+  # restricted by the topic and queue policies below (only this module's rules).
   statement {
-    sid       = "AllowEventBridgeAndSnsToUseKey"
+    sid       = "AllowEventBridgeToUseKey"
     effect    = "Allow"
     actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
     resources = ["*"]
 
     principals {
       type        = "Service"
-      identifiers = ["events.amazonaws.com", "sns.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:SourceAccount"
-      values   = [local.account_id]
+      identifiers = ["events.amazonaws.com"]
     }
   }
 
@@ -279,9 +280,8 @@ data "archive_file" "slack" {
   count = local.slack_enabled ? 1 : 0
 
   type        = "zip"
-  source_dir  = "${path.module}/lambda"
+  source_file = "${path.module}/lambda/handler.py"
   output_path = "${path.module}/build/slack.zip"
-  excludes    = ["__pycache__", "tests"]
 }
 
 data "aws_iam_policy_document" "lambda_assume" {
@@ -347,6 +347,14 @@ data "aws_iam_policy_document" "slack" {
     }
   }
 
+  # X-Ray segment APIs do not support resource-level permissions.
+  statement {
+    sid       = "WriteXRayTraces"
+    effect    = "Allow"
+    actions   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+    resources = ["*"]
+  }
+
   statement {
     sid       = "UseAlertsKey"
     effect    = "Allow"
@@ -390,6 +398,7 @@ resource "aws_lambda_function" "slack" {
   #checkov:skip=CKV_AWS_117:No VPC resources are reachable or required; function only calls Slack and AWS APIs over TLS.
   #checkov:skip=CKV_AWS_116:DLQ is configured via dead_letter_config.
   #checkov:skip=CKV_AWS_272:Code signing is optional and not enforced at baseline.
+  #checkov:skip=CKV_AWS_356:X-Ray write actions do not support resource-level permissions.
   count = local.slack_enabled ? 1 : 0
 
   function_name                  = "${var.name_prefix}-slack-notifier"
@@ -401,7 +410,7 @@ resource "aws_lambda_function" "slack" {
   source_code_hash               = data.archive_file.slack[0].output_base64sha256
   timeout                        = 15
   memory_size                    = 128
-  reserved_concurrent_executions = 5
+  reserved_concurrent_executions = var.lambda_reserved_concurrency
   kms_key_arn                    = module.kms.key_arn
 
   environment {

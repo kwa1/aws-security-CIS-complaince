@@ -2,12 +2,13 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  partition   = data.aws_partition.current.partition
-  account_id  = data.aws_caller_identity.current.account_id
-  state_name  = "${var.name_prefix}-tfstate-${local.account_id}"
-  oidc_url    = "token.actions.githubusercontent.com"
-  oidc_arn    = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : "arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_url}"
-  role_prefix = "arn:${local.partition}:iam::${local.account_id}:role/${var.name_prefix}-*"
+  partition  = data.aws_partition.current.partition
+  account_id = data.aws_caller_identity.current.account_id
+  state_name = "${var.name_prefix}-tfstate-${local.account_id}"
+  oidc_url   = "token.actions.githubusercontent.com"
+  oidc_arn   = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : "arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_url}"
+  iam_arn    = "arn:${local.partition}:iam::${local.account_id}"
+  s3_arn     = "arn:${local.partition}:s3:::"
 
   tags = {
     Project     = "aws-cis-governance"
@@ -32,7 +33,7 @@ data "aws_iam_policy_document" "state_logs" {
     sid       = "AllowS3LogDelivery"
     effect    = "Allow"
     actions   = ["s3:PutObject"]
-    resources = ["arn:${local.partition}:s3:::${local.state_name}-logs/*"]
+    resources = ["${local.s3_arn}${local.state_name}-logs/*"]
 
     principals {
       type        = "Service"
@@ -42,7 +43,7 @@ data "aws_iam_policy_document" "state_logs" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = ["arn:${local.partition}:s3:::${local.state_name}"]
+      values   = ["${local.s3_arn}${local.state_name}"]
     }
 
     condition {
@@ -137,7 +138,44 @@ data "aws_iam_policy_document" "apply_trust" {
   }
 }
 
-data "aws_iam_policy_document" "state_access" {
+# --- Read access shared by plan and apply (metadata only; no object or secret data) ----------
+
+data "aws_iam_policy_document" "read_extras" {
+  #checkov:skip=CKV_AWS_356:Read-only Describe/Get/List actions; most do not support resource-level permissions.
+  statement {
+    sid    = "ReadResourceConfiguration"
+    effect = "Allow"
+    actions = [
+      "config:Describe*", "config:Get*", "config:List*", "config:SelectResourceConfig",
+      "securityhub:Describe*", "securityhub:Get*", "securityhub:List*",
+      "sns:Get*", "sns:List*",
+      "sqs:Get*", "sqs:List*",
+      "events:Describe*", "events:List*",
+      "lambda:Get*", "lambda:List*",
+      "logs:Describe*", "logs:ListTagsForResource", "logs:ListTagsLogGroup",
+      "ssm:Describe*", "ssm:Get*", "ssm:List*",
+      "kms:Describe*", "kms:Get*", "kms:List*",
+      "s3:GetBucket*", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration",
+      "s3:GetAccelerateConfiguration", "s3:GetReplicationConfiguration", "s3:GetAccountPublicAccessBlock",
+      "s3:ListAllMyBuckets", "s3:ListBucket",
+      "ec2:GetEbsEncryptionByDefault", "ec2:GetEbsDefaultKmsKeyId",
+      "iam:GetAccountPasswordPolicy", "iam:ListOpenIDConnectProviders", "iam:GetOpenIDConnectProvider",
+      "organizations:Describe*", "organizations:List*",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "read_extras" {
+  name        = "${var.name_prefix}-ci-read"
+  description = "Additional read permissions Terraform needs to refresh the governance stacks"
+  policy      = data.aws_iam_policy_document.read_extras.json
+  tags        = local.tags
+}
+
+# --- State access ----------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "state_read" {
   statement {
     sid       = "ListStateBucket"
     effect    = "Allow"
@@ -146,10 +184,18 @@ data "aws_iam_policy_document" "state_access" {
   }
 
   statement {
-    sid       = "ReadWriteStateAndLock"
+    sid       = "ReadState"
     effect    = "Allow"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions   = ["s3:GetObject"]
     resources = ["${module.state.bucket_arn}/*"]
+  }
+
+  # S3 native locking writes and removes a ".tflock" object next to the state file.
+  statement {
+    sid       = "WriteLockFilesOnly"
+    effect    = "Allow"
+    actions   = ["s3:PutObject", "s3:DeleteObject"]
+    resources = ["${module.state.bucket_arn}/*.tflock"]
   }
 
   statement {
@@ -160,6 +206,19 @@ data "aws_iam_policy_document" "state_access" {
   }
 }
 
+data "aws_iam_policy_document" "state_write" {
+  source_policy_documents = [data.aws_iam_policy_document.state_read.json]
+
+  statement {
+    sid       = "WriteState"
+    effect    = "Allow"
+    actions   = ["s3:PutObject", "s3:DeleteObject"]
+    resources = ["${module.state.bucket_arn}/*"]
+  }
+}
+
+# --- Plan role: read-only, usable from pull requests -----------------------------------------
+
 resource "aws_iam_role" "plan" {
   name                 = "${var.name_prefix}-ci-plan"
   description          = "Read-only role for terraform plan in pull requests and drift detection"
@@ -168,39 +227,113 @@ resource "aws_iam_role" "plan" {
   tags                 = local.tags
 }
 
-resource "aws_iam_role_policy_attachment" "plan_readonly" {
+# SecurityAudit grants metadata-only reads (no S3 object or secret values).
+resource "aws_iam_role_policy_attachment" "plan_security_audit" {
   role       = aws_iam_role.plan.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/ReadOnlyAccess"
+  policy_arn = "arn:${local.partition}:iam::aws:policy/SecurityAudit"
+}
+
+resource "aws_iam_role_policy_attachment" "plan_read_extras" {
+  role       = aws_iam_role.plan.name
+  policy_arn = aws_iam_policy.read_extras.arn
 }
 
 resource "aws_iam_role_policy" "plan_state" {
   name   = "terraform-state"
   role   = aws_iam_role.plan.id
-  policy = data.aws_iam_policy_document.state_access.json
+  policy = data.aws_iam_policy_document.state_read.json
 }
 
-# Scoped apply permissions: only the services this repository manages, and IAM limited to
-# resources named with the project prefix.
+# --- Apply role: scoped to this project's resources, gated by a protected GitHub Environment -
+
 data "aws_iam_policy_document" "apply" {
+  #checkov:skip=CKV_AWS_108:Data-read actions are not granted; managed services are scoped to project-prefixed resources.
+  #checkov:skip=CKV_AWS_109:IAM permission-management is limited to project-prefixed roles/policies with a PolicyARN condition on attachment.
+  #checkov:skip=CKV_AWS_110:Privilege escalation is blocked by the iam:PolicyARN allow-list and the CI-role tamper deny below.
+  #checkov:skip=CKV_AWS_111:Write access is scoped by resource prefix, KMS tag conditions, or is required account-level setting.
+  #checkov:skip=CKV_AWS_356:AWS Config and Security Hub have no name-scopable ARNs; kms:CreateKey and account settings cannot be resource-scoped.
+
+  # AWS Config and Security Hub resources (recorder, delivery channel, hub) cannot be scoped by name.
   statement {
-    sid    = "ManagedServices"
-    effect = "Allow"
-    actions = [
-      "config:*",
-      "securityhub:*",
-      "sns:*",
-      "sqs:*",
-      "events:*",
-      "lambda:*",
-      "logs:*",
-      "ssm:*",
-      "kms:*",
-      "s3:*",
-      "secretsmanager:DescribeSecret",
-      "secretsmanager:GetResourcePolicy",
-      "xray:*",
-    ]
+    sid       = "ConfigAndSecurityHub"
+    effect    = "Allow"
+    actions   = ["config:*", "securityhub:*"]
     resources = ["*"]
+  }
+
+  statement {
+    sid     = "ProjectPrefixedResources"
+    effect  = "Allow"
+    actions = ["sns:*", "sqs:*"]
+    resources = [
+      "arn:${local.partition}:sns:*:${local.account_id}:${var.name_prefix}-*",
+      "arn:${local.partition}:sqs:*:${local.account_id}:${var.name_prefix}-*",
+    ]
+  }
+
+  statement {
+    sid     = "ProjectEventsLambdaSsm"
+    effect  = "Allow"
+    actions = ["events:*", "lambda:*", "ssm:*"]
+    resources = [
+      "arn:${local.partition}:events:*:${local.account_id}:rule/${var.name_prefix}-*",
+      "arn:${local.partition}:lambda:*:${local.account_id}:function:${var.name_prefix}-*",
+      "arn:${local.partition}:ssm:*:${local.account_id}:document/${var.name_prefix}-*",
+    ]
+  }
+
+  statement {
+    sid     = "ProjectLogGroups"
+    effect  = "Allow"
+    actions = ["logs:*"]
+    resources = [
+      "arn:${local.partition}:logs:*:${local.account_id}:log-group:/aws/lambda/${var.name_prefix}-*",
+      "arn:${local.partition}:logs:*:${local.account_id}:log-group:/aws/lambda/${var.name_prefix}-*:*",
+    ]
+  }
+
+  statement {
+    sid     = "ProjectBuckets"
+    effect  = "Allow"
+    actions = ["s3:*"]
+    resources = [
+      "${local.s3_arn}${var.name_prefix}-*",
+      "${local.s3_arn}${var.name_prefix}-*/*",
+    ]
+  }
+
+  # Keys cannot be named; they are controlled through the Project tag set at creation.
+  statement {
+    sid       = "CreateProjectKeys"
+    effect    = "Allow"
+    actions   = ["kms:CreateKey", "kms:TagResource"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = ["aws-cis-governance"]
+    }
+  }
+
+  statement {
+    sid       = "ManageProjectKeys"
+    effect    = "Allow"
+    actions   = ["kms:*"]
+    resources = ["arn:${local.partition}:kms:*:${local.account_id}:key/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = ["aws-cis-governance"]
+    }
+  }
+
+  statement {
+    sid       = "ManageProjectAliases"
+    effect    = "Allow"
+    actions   = ["kms:CreateAlias", "kms:UpdateAlias", "kms:DeleteAlias"]
+    resources = ["arn:${local.partition}:kms:*:${local.account_id}:alias/${var.name_prefix}-*"]
   }
 
   statement {
@@ -209,33 +342,54 @@ data "aws_iam_policy_document" "apply" {
     actions = [
       "ec2:EnableEbsEncryptionByDefault",
       "ec2:DisableEbsEncryptionByDefault",
-      "ec2:GetEbsEncryptionByDefault",
-      "ec2:GetEbsDefaultKmsKeyId",
-      "iam:GetAccountPasswordPolicy",
       "iam:UpdateAccountPasswordPolicy",
       "iam:DeleteAccountPasswordPolicy",
       "s3:PutAccountPublicAccessBlock",
-      "s3:GetAccountPublicAccessBlock",
-      "organizations:DescribeOrganization",
-      "organizations:ListAWSServiceAccessForOrganization",
-      "organizations:ListDelegatedAdministrators",
-      "organizations:EnableAWSServiceAccess",
-      "organizations:RegisterDelegatedAdministrator",
     ]
     resources = ["*"]
   }
 
   statement {
-    sid    = "ProjectIamOnly"
+    sid    = "ProjectRoles"
     effect = "Allow"
     actions = [
       "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:UpdateRole", "iam:UpdateAssumeRolePolicy",
       "iam:TagRole", "iam:UntagRole", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
-      "iam:PutRolePolicy", "iam:GetRolePolicy", "iam:DeleteRolePolicy",
-      "iam:PassRole",
+      "iam:ListInstanceProfilesForRole", "iam:DetachRolePolicy",
     ]
-    resources = [local.role_prefix]
+    resources = ["${local.iam_arn}:role/${var.name_prefix}-*"]
+  }
+
+  # Only project policies and the two AWS-managed service-role policies may be attached,
+  # so the apply role cannot grant itself or a new role administrator access.
+  statement {
+    sid       = "AttachApprovedPoliciesOnly"
+    effect    = "Allow"
+    actions   = ["iam:AttachRolePolicy"]
+    resources = ["${local.iam_arn}:role/${var.name_prefix}-*"]
+
+    condition {
+      test     = "ArnLike"
+      variable = "iam:PolicyARN"
+      values = [
+        "${local.iam_arn}:policy/${var.name_prefix}-*",
+        "arn:${local.partition}:iam::aws:policy/service-role/AWS_ConfigRole",
+        "arn:${local.partition}:iam::aws:policy/service-role/AWSConfigRoleForOrganizations",
+      ]
+    }
+  }
+
+  statement {
+    sid       = "PassRoleToProjectServices"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = ["${local.iam_arn}:role/${var.name_prefix}-*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["config.amazonaws.com", "lambda.amazonaws.com", "ssm.amazonaws.com"]
+    }
   }
 
   statement {
@@ -246,7 +400,7 @@ data "aws_iam_policy_document" "apply" {
       "iam:ListPolicyVersions", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion",
       "iam:TagPolicy", "iam:UntagPolicy",
     ]
-    resources = ["arn:${local.partition}:iam::${local.account_id}:policy/${var.name_prefix}-*"]
+    resources = ["${local.iam_arn}:policy/${var.name_prefix}-*"]
   }
 
   statement {
@@ -262,29 +416,44 @@ data "aws_iam_policy_document" "apply" {
         "config.amazonaws.com",
         "securityhub.amazonaws.com",
         "ssm.amazonaws.com",
-        "organizations.amazonaws.com",
       ]
     }
   }
 
+  # --- Guardrails (explicit Deny always wins) ---
+
   statement {
-    sid       = "ReadIdentityInfo"
-    effect    = "Allow"
-    actions   = ["iam:GetOpenIDConnectProvider", "iam:ListRoles", "sts:GetCallerIdentity"]
-    resources = ["*"]
+    sid       = "DenyCiAccessTampering"
+    effect    = "Deny"
+    actions   = ["iam:*"]
+    resources = ["${local.iam_arn}:role/${var.name_prefix}-ci-*", "${local.iam_arn}:oidc-provider/${local.oidc_url}"]
   }
 
-  # Guardrail: this role must never be able to change its own trust, or CI access.
   statement {
-    sid    = "DenyCiRoleTampering"
+    sid    = "DenyStateBucketAdministration"
     effect = "Deny"
     actions = [
-      "iam:*",
+      "s3:DeleteBucket", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:PutBucketVersioning",
+      "s3:PutEncryptionConfiguration", "s3:PutBucketPublicAccessBlock", "s3:PutLifecycleConfiguration",
+      "s3:PutBucketLogging", "s3:DeleteObjectVersion", "s3:PutBucketOwnershipControls",
     ]
-    resources = [
-      "arn:${local.partition}:iam::${local.account_id}:role/${var.name_prefix}-ci-*",
-      "arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_url}",
+    resources = ["${local.s3_arn}${var.name_prefix}-tfstate-*", "${local.s3_arn}${var.name_prefix}-tfstate-*/*"]
+  }
+
+  statement {
+    sid    = "DenyBootstrapKeyAdministration"
+    effect = "Deny"
+    actions = [
+      "kms:ScheduleKeyDeletion", "kms:DisableKey", "kms:PutKeyPolicy", "kms:DisableKeyRotation",
+      "kms:CreateGrant", "kms:RevokeGrant", "kms:RetireGrant",
     ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Stack"
+      values   = ["bootstrap"]
+    }
   }
 }
 
@@ -308,8 +477,18 @@ resource "aws_iam_role_policy_attachment" "apply" {
   policy_arn = aws_iam_policy.apply.arn
 }
 
+resource "aws_iam_role_policy_attachment" "apply_security_audit" {
+  role       = aws_iam_role.apply.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/SecurityAudit"
+}
+
+resource "aws_iam_role_policy_attachment" "apply_read_extras" {
+  role       = aws_iam_role.apply.name
+  policy_arn = aws_iam_policy.read_extras.arn
+}
+
 resource "aws_iam_role_policy" "apply_state" {
   name   = "terraform-state"
   role   = aws_iam_role.apply.id
-  policy = data.aws_iam_policy_document.state_access.json
+  policy = data.aws_iam_policy_document.state_write.json
 }

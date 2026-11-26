@@ -37,6 +37,17 @@ variable "log_retention_days" {
   }
 }
 
+variable "lambda_reserved_concurrency" {
+  description = "Reserved concurrency for the notifier (caps cost and blast radius). Use -1 for no reservation; new accounts with a concurrency limit of 10 cannot reserve any."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.lambda_reserved_concurrency >= -1
+    error_message = "lambda_reserved_concurrency must be -1 (unreserved) or a non-negative number."
+  }
+}
+
 variable "tags" {
   description = "Tags applied to resources."
   type        = map(string)

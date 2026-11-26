@@ -80,6 +80,7 @@ resource "aws_iam_role_policy_attachment" "delivery" {
 }
 
 resource "aws_config_configuration_recorder" "this" {
+  #checkov:skip=CKV2_AWS_48:Global resource types are intentionally recorded in the home region only to avoid duplicate IAM records.
   name     = "${var.name_prefix}-recorder"
   role_arn = aws_iam_role.config.arn
 

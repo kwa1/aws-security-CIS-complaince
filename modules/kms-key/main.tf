@@ -2,6 +2,9 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 data "aws_iam_policy_document" "this" {
+  #checkov:skip=CKV_AWS_109:Root-account statement is the AWS-documented pattern that delegates control to IAM.
+  #checkov:skip=CKV_AWS_111:Same as above; key policy resource "*" refers to this key only.
+  #checkov:skip=CKV_AWS_356:Key policy resource "*" refers to this key only.
   source_policy_documents = var.additional_policy_documents
 
   # Standard "enable IAM policies" statement. Access is then governed by IAM
@@ -20,9 +23,6 @@ data "aws_iam_policy_document" "this" {
 }
 
 resource "aws_kms_key" "this" {
-  #checkov:skip=CKV_AWS_109:Root-account statement is the AWS-documented pattern that delegates control to IAM.
-  #checkov:skip=CKV_AWS_111:Same as above; key policy resource "*" refers to this key only.
-  #checkov:skip=CKV_AWS_356:Key policy resource "*" refers to this key only.
   description              = var.description
   enable_key_rotation      = true
   rotation_period_in_days  = 365

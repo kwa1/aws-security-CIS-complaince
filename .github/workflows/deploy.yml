@@ -54,7 +54,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      pull-requests: write
     uses: ./.github/workflows/terraform.yml
     with:
       stack: ${{ matrix.stack }}

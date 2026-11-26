@@ -21,15 +21,16 @@ module "central_storage" {
   tags                 = local.tags
 }
 
-# Non-home regions reference the bucket/key created in the home region by naming convention.
-data "aws_kms_alias" "config_delivery" {
-  count = var.is_home_region ? 0 : 1
-
-  name = "alias/${local.name_prefix}-config-delivery"
+# Non-home regions use the key created in the home region (pass its ARN via config_kms_key_arn).
+locals {
+  config_kms_key_arn = var.is_home_region ? module.central_storage[0].kms_key_arn : var.config_kms_key_arn
 }
 
-locals {
-  config_kms_key_arn = var.is_home_region ? module.central_storage[0].kms_key_arn : data.aws_kms_alias.config_delivery[0].target_key_arn
+check "non_home_region_has_key" {
+  assert {
+    condition     = var.is_home_region || var.config_kms_key_arn != null
+    error_message = "config_kms_key_arn must be set when is_home_region = false."
+  }
 }
 
 # --- This account is also a governed account -------------------------------------------------
