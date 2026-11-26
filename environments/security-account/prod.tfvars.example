@@ -1,0 +1,16 @@
+# Copy to prod.tfvars. No secrets belong here; the Slack webhook lives in Secrets Manager.
+account_id     = "111111111111"
+aws_region     = "us-east-1"
+is_home_region = true
+name_prefix    = "org-sec"
+environment    = "prod"
+
+config_bucket_name   = "org-sec-config-111111111111"
+governed_account_ids = ["111111111111", "222222222222", "333333333333"]
+
+alert_emails             = ["security-alerts@example.com"]
+slack_webhook_secret_arn = null # e.g. "arn:aws:secretsmanager:us-east-1:111111111111:secret:org-sec/slack-webhook-AbCdEf"
+
+# Roll remediation out gradually: detect -> manual -> automatic.
+enable_remediation    = false
+remediation_automatic = false
