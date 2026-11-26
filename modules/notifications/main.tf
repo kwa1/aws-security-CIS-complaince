@@ -38,10 +38,10 @@ locals {
         "detail-type" = ["Security Hub Findings - Imported"]
         detail = {
           findings = {
-            Severity         = { Label = ["HIGH", "CRITICAL"] }
-            Workflow         = { Status = ["NEW"] }
-            RecordState      = ["ACTIVE"]
-            Compliance       = { Status = ["FAILED"] }
+            Severity    = { Label = ["HIGH", "CRITICAL"] }
+            Workflow    = { Status = ["NEW"] }
+            RecordState = ["ACTIVE"]
+            Compliance  = { Status = ["FAILED"] }
           }
         }
       }

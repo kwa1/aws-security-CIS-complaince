@@ -64,8 +64,8 @@ resource "aws_ssm_document" "block_s3_public" {
     assumeRole    = "{{ AutomationAssumeRole }}"
     parameters = {
       BucketName = {
-        type        = "String"
-        description = "Name of the bucket to remediate."
+        type           = "String"
+        description    = "Name of the bucket to remediate."
         allowedPattern = "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
       }
       AutomationAssumeRole = {
