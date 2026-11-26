@@ -1,0 +1,9 @@
+# Copy to <account>-<region>.backend.hcl (committed; contains no secrets):
+#   terraform init -backend-config=<account>-<region>.backend.hcl
+# One state key per account+region. The state bucket lives in the account that ran bootstrap/.
+bucket       = "org-sec-tfstate-111111111111"
+key          = "member-account/222222222222/us-east-1/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+kms_key_id   = "arn:aws:kms:us-east-1:111111111111:key/REPLACE-WITH-bootstrap-output-state_kms_key_arn"
+use_lockfile = true

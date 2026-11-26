@@ -1,0 +1,13 @@
+# Copy to <account>-<region>.tfvars.
+account_id     = "222222222222"
+aws_region     = "us-east-1"
+is_home_region = true
+name_prefix    = "org-sec"
+environment    = "prod"
+
+# From the security-account stack outputs:
+config_bucket_name = "org-sec-config-111111111111"
+config_kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/REPLACE-WITH-security-account-output"
+
+enable_remediation    = false
+remediation_automatic = false
